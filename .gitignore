@@ -1,2 +1,150 @@
 /postgres-keycloak-data
 2024__yandex-architecture-sso.code-workspace
+# ============================================
+# PYTHON
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# ============================================
+# ВИРТУАЛЬНЫЕ ОКРУЖЕНИЯ
+# ============================================
+.venv/
+venv/
+ENV/
+env/
+.conda/
+.miniconda/
+.pdm-python
+.pdm-build/
+__pypackages__/
+
+# ============================================
+# IDE / РЕДАКТОРЫ
+# ============================================
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+.history/
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Sublime
+*.sublime-project
+*.sublime-workspace
+
+# ============================================
+# WINDOWS
+# ============================================
+# Thumbnails
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+
+# ============================================
+# macOS
+# ============================================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Thumbnails
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# iCloud
+*.icloud
+
+# ============================================
+# ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ / СЕКРЕТЫ
+# ============================================
+.env
+.env.*
+!.env.example
+*.env.local
+secrets.json
+credentials.json
+
+# ============================================
+# ЛОГИ И ВРЕМЕННЫЕ ФАЙЛЫ
+# ============================================
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+
+# ============================================
+# ПРОЧЕЕ
+# ============================================
+.DS_Store?
+*.pid
+*.seed
+*.pid.lock
+node_modules/
