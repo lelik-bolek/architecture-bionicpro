@@ -24,43 +24,44 @@
 
 ## 3. Реализация PKCE Flow (Задача 2)
 
-### 3.1. Принудительный PKCE на сервере авторизации (Keycloak)
-- Для публичного клиента `reports-frontend` в `keycloak/realm-export.json` установлен атрибут `pkce.code.challenge.method = S256`: сервер авторизации отклоняет запросы к `/protocol/openid-connect/auth` без валидной пары `code_challenge` + `code_challenge_method=S256` (ошибка `invalid_request: Missing parameter: code_challenge_method`).
-- Прямой грант отключен (`directAccessGrantsEnabled = false`): аутентификация по логину/паролю напрямую через `/protocol/openid-connect/token` (`grant_type=password`, Direct Access Grants) запрещена — все пользователи проходят единый безопасный SSO Authorization Code Flow.
+### 3.1. Почему произошел инцидент и как помогает PKCE
+В первой версии системы использовался стандартный Authorization Code Grant для публичного клиента (SPA/React). У публичных приложений нет серверной части для хранения `client_secret`, поэтому авторизационный код передается через браузер открыто. Если злоумышленник перехватывает этот код (через сниффинг трафика, логи или подмену URI-схемы на клиенте), он может сразу отправить его на сервер авторизации и забрать токены пользователя — именно эта уязвимость и привела к утечке данных в BionicPRO.
 
-### 3.2. PKCE на стороне SPA (React)
-- SPA инициализирует `keycloak-js` с `initOptions: { pkceMethod: 'S256', onLoad: 'login-required' }` (`frontend/src/App.tsx`).
-- Библиотека генерирует криптостойкий `code_verifier`, вычисляет `code_challenge = BASE64URL(SHA256(code_verifier))` и передает challenge в запросе авторизации, а verifier — только при обмене кода на токен. Перехваченный авторизационный код бесполезен без `code_verifier`, который хранится исключительно в браузере легитимного клиента и никогда не передается по фронт-каналу.
+Чтобы закрыть эту дыру, мы внедрили протокол PKCE (Proof Key for Code Exchange, RFC 7636):
+1. Браузер сам создает одноразовый секрет — `code_verifier` (случайную строку высокой энтропии) и держит его в памяти.
+2. На сервер Keycloak отправляется только его хеш — `code_challenge = BASE64URL(SHA256(code_verifier))` с указанием метода `S256`.
+3. Сервер авторизации запоминает этот хеш и связывает его с выданным временным кодом.
+4. Когда фронтенд обменивает код на токен, он отсылает исходный `code_verifier`. Keycloak хеширует полученную строку и сверяет с сохраненным ранее значением.
 
-### 3.3. Протокол верификации PKCE (RFC 7636)
+Если злоумышленник перехватит авторизационный код, он все равно ничего не сможет сделать: у него нет `code_verifier`, а вычислить его из SHA-256 математически невозможно из-за однонаправленности хеш-функции. Сервер просто вернет ошибку `invalid_grant` и не выдаст токен.
 
-**Шаг 1 — запрос авторизации (front-channel, браузер → Keycloak).** В запросе `/auth` присутствуют `code_challenge` и `code_challenge_method=S256`:
+---
 
-```http
-GET /realms/reports-realm/protocol/openid-connect/auth?client_id=reports-frontend&response_type=code&scope=openid&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2F&code_challenge=<BASE64URL(SHA256(code_verifier))>&code_challenge_method=S256
-```
+### 3.2. Что было сделано в кодовой базе
 
-Keycloak сохраняет `code_challenge` вместе с выданным авторизационным кодом. Благодаря атрибуту `pkce.code.challenge.method=S256` запрос без `code_challenge` отклоняется с ошибкой `invalid_request: Missing parameter: code_challenge_method`.
+1. **Настройка Keycloak (`keycloak/realm-export.json`):**
+   - Для клиента фронтенда `reports-frontend` принудительно включили требование проверки ключа: добавили атрибут `"pkce.code.challenge.method": "S256"`. Теперь сервер отклоняет любые попытки входа без challenge.
+   - Отключили параметр `"directAccessGrantsEnabled": false`. Прямая отправка логина и пароля через API небезопасна, поэтому мы оставили единственный легитимный путь входа — через единую форму SSO с PKCE.
 
-**Шаг 2 — обмен кода на токен (back-channel, браузер → Keycloak).** В запросе `/token` присутствует `code_verifier`:
+2. **Настройка React-приложения (`frontend/src/App.tsx`):**
+   - Библиотека `keycloak-js` поддерживает PKCE из коробки, поэтому мы передали в провайдер параметры инициализации:
+     ```tsx
+     const keycloakInitOptions: KeycloakInitOptions = {
+       onLoad: 'login-required',
+       pkceMethod: 'S256',
+       checkLoginIframe: false,
+       enableLogging: true
+     };
+     ```
+   - За счет параметра `pkceMethod: 'S256'` библиотека автоматически генерирует `code_verifier`, подставляет расчетный `code_challenge` в URL редиректа на форму логина и отправляет исходный verifier при запросе токена.
 
-```http
-POST /realms/reports-realm/protocol/openid-connect/token
-Content-Type: application/x-www-form-urlencoded
+---
 
-grant_type=authorization_code&client_id=reports-frontend&code=<authorization_code>&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2F&code_verifier=<исходный code_verifier>
-```
+### 3.3. Как проверялась работа (тестирование)
 
-Keycloak вычисляет `BASE64URL(SHA256(code_verifier))` и сравнивает результат с `code_challenge`, сохраненным на шаге 1. При несовпадении возвращается ошибка `invalid_grant`, токены не выпускаются.
-
-### 3.4. Почему PKCE предотвращает Authorization Code Interception Attack
-
-- В классическом Authorization Code Flow без PKCE авторизационный код — единственный секрет фронт-канала: перехватив его (вредоносное приложение на устройстве, перехват redirect через кастомную URL-схему, журналы/Referer), атакующий немедленно обменял бы код на пару access/refresh токенов — именно так произошел инцидент в BionicPRO.
-- PKCE (RFC 7636) привязывает авторизационный код к конкретному экземпляру клиента: `code_verifier` — криптостойкая случайная строка (43–128 символов), которая генерируется и хранится только в памяти браузера легитимного клиента и никогда не покидает фронт-канал; по сети передается лишь необратимый `code_challenge` (SHA-256).
-- Перехваченный код бесполезен: на шаге обмена `/token` атакующий не сможет предъявить корректный `code_verifier`, сервер вернет `invalid_grant`. Восстановить verifier из challenge невозможно — SHA-256 однонаправлен.
-- Тем самым устранена исходная уязвимость BionicPRO: компрометация авторизационного кода больше не приводит к компрометации токенов и ПДн. Отключение `directAccessGrantsEnabled` дополнительно закрывает обходной канал получения токенов по логину/паролю (`grant_type=password`) в обход SSO-потока.
-
-## 4. Верификация решения
-
-- Импорт realm подтвержден логами Keycloak 21.1.2: `Realm 'reports-realm' imported`, `KC-SERVICES0032: Import finished successfully` (`docker compose logs keycloak`).
-- Быстрая проверка в браузере: открыть `http://localhost:3000` → редирект на страницу входа Keycloak (`reports-realm`) → войти `user1` / `password123` → редирект обратно на SPA с кодом → обмен кода на токен с `code_verifier`. В DevTools (вкладка Network) в запросе `/auth` видны `code_challenge` и `code_challenge_method=S256`, в запросе `/token` — `code_verifier`.
+Проверка проводилась в браузере с открытой панелью DevTools (вкладка Network, режим «Preserve log»):
+1. При переходе на `http://localhost:3000` происходит редирект на экран авторизации Keycloak. В URL запроса `/protocol/openid-connect/auth` появились параметры:
+   - `code_challenge=...`
+   - `code_challenge_method=S256`
+2. После успешного ввода логина и пароля (`prothetic1` / `prothetic123`) фронтенд выполняет POST-запрос к `/protocol/openid-connect/token`. В теле запроса (Form Data) передается параметр `code_verifier`. Keycloak успешно валидирует хеш и возвращает пару JWT-токенов.
+3. Дополнительно проверили сценарий без PKCE: при прямой отправке запроса на `/auth` без параметра `code_challenge_method` Keycloak возвращает ошибку `invalid_request: Missing parameter: code_challenge_method`. Сервер надежно защищен от попыток обойти flow.
