@@ -1,0 +1,261 @@
+# ==============================================================================
+# BionicPRO CI — автоматическая проверка сборки, целостности и требований
+# Задания 1 (OAuth 2.0 PKCE / Keycloak) и Задания 2 (аналитический контур).
+#
+# Пайплайн выполняется на ubuntu-latest (чистый Linux, как у ревьюера) и
+# устойчив к расширению docker-compose.yaml под task-2: сервисы ClickHouse /
+# Airflow поднимаются по профилям или условно и не ломают CI для task-1.
+# ==============================================================================
+name: BionicPRO CI
+
+on:
+  push:
+    branches: [task-1, task-2, main]
+  pull_request:
+    branches: [main, task-1, task-2]
+
+jobs:
+  ci:
+    name: Build, Integrity & PKCE Smoketests
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------------
+      # Этап A. Кроссплатформенность и целостность файлов
+      # ------------------------------------------------------------------
+
+      # Шаг A1: получение кодовой базы.
+      # .gitattributes содержит "* text=auto eol=lf", поэтому checkout на
+      # Linux гарантирует LF-окончания в рабочей копии.
+      - name: A1. Checkout
+        uses: actions/checkout@v4
+
+      # Шаг A2: проверка окончаний строк.
+      # Ищем символ возврата каретки (\r, CRLF) в файлах кодовой базы.
+      # Наличие CRLF ломает shell-скрипты и ухуджает диффы между
+      # Windows/macOS-разработкой и Linux-ревью.
+      - name: A2. Check for CRLF line endings
+        run: |
+          echo "Scanning codebase for CRLF characters..."
+          CRLF_FILES=$(grep -rIl $'\r' \
+            --include='*.sh' \
+            --include='*.json' \
+            --include='*.py' \
+            --include='*.tsx' \
+            --include='*.ts' \
+            --include='*.yaml' \
+            --include='*.yml' \
+            --include='*.md' \
+            --include='*.sql' \
+            --exclude-dir=.git \
+            . || true)
+
+          if [ -n "$CRLF_FILES" ]; then
+            echo "::error::Found files with CRLF line endings (must be LF):"
+            echo "$CRLF_FILES"
+            exit 1
+          fi
+          echo "OK: no CRLF characters found."
+
+      # Шаг A3: синтаксическая валидация keycloak/realm-export.json.
+      # Конфигурация realm импортируется Keycloak при старте — невалидный
+      # JSON привёл бы к тихому провалу импорта на этапе B.
+      - name: A3. Validate keycloak/realm-export.json
+        run: |
+          python3 -m json.tool keycloak/realm-export.json > /dev/null
+          echo "OK: realm-export.json is valid JSON."
+
+      # Шаг A4: валидация docker compose.
+      # `docker compose config --quiet` парсит YAML и проверяет схему compose,
+      # включая расширения task-2 (профили ClickHouse/Airflow), если они есть.
+      - name: A4. Validate docker-compose.yaml
+        run: |
+          docker compose -f docker-compose.yaml config --quiet
+          echo "OK: docker-compose.yaml is valid."
+
+      # Шаг A5 (статическая проверка Задания 1):
+      # клиент reports-frontend в realm-export.json обязан использовать
+      # PKCE S256 и иметь запрещённый Direct Access Grants (ROPF-защита).
+      - name: A5. Verify PKCE S256 & disabled Direct Access Grants (Task 1)
+        run: |
+          python3 - <<'EOF'
+          import json
+          import sys
+
+          with open("keycloak/realm-export.json", encoding="utf-8") as f:
+              realm = json.load(f)
+
+          clients = {c.get("clientId"): c for c in realm.get("clients", [])}
+
+          if "reports-frontend" not in clients:
+              sys.exit("FAIL: client 'reports-frontend' not found in realm-export.json")
+
+          client = clients["reports-frontend"]
+          attrs = client.get("attributes", {})
+
+          pkce = attrs.get("pkce.code.challenge.method")
+          if pkce != "S256":
+              sys.exit(
+                  f"FAIL: expected 'pkce.code.challenge.method' == 'S256', got: {pkce!r}"
+              )
+
+          if client.get("directAccessGrantsEnabled", True) is not False:
+              sys.exit("FAIL: 'directAccessGrantsEnabled' must be false for 'reports-frontend'")
+
+          if not client.get("standardFlowEnabled", False):
+              sys.exit("FAIL: 'standardFlowEnabled' must be true (Authorization Code Flow)")
+
+          print("OK: PKCE S256 enforced, Direct Access Grants disabled.")
+          EOF
+
+      # ------------------------------------------------------------------
+      # Этап B. Сборка и запуск инфраструктуры
+      # ------------------------------------------------------------------
+
+      # Шаг B1: сборка образов (frontend — единственный сервис с build context;
+      # сервисы task-2 при наличии build-секций соберутся автоматически).
+      - name: B1. Build images
+        run: docker compose -f docker-compose.yaml build
+
+      # Шаг B2: запуск стека в фоновом режиме.
+      # -d — detached; health-check ожидание делаем отдельными шагами.
+      - name: B2. Start services
+        run: docker compose -f docker-compose.yaml up -d
+
+      - name: B2a. Show running containers
+        run: docker compose -f docker-compose.yaml ps
+
+      # Шаг B3: ожидание готовности Keycloak (импорт realm занимает время).
+      # Ожидаем успешный ответ realm-эндпоинта reports-realm: до 3 минут.
+      - name: B3. Wait for Keycloak (realm reports-realm)
+        run: |
+          echo "Waiting for Keycloak realm 'reports-realm'..."
+          for i in $(seq 1 36); do
+            if curl -fsS http://localhost:8080/realms/reports-realm > /tmp/realm.json 2>/dev/null; then
+              echo "OK: Keycloak is up (attempt $i)."
+              grep -q '"realm" *: *"reports-realm"' /tmp/realm.json \
+                && echo "OK: realm 'reports-realm' imported." \
+                || { echo "::error::Realm 'reports-realm' not found in response"; cat /tmp/realm.json; exit 1; }
+              exit 0
+            fi
+            echo "Attempt $i/36: Keycloak not ready yet, retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::Keycloak did not become ready in time. Logs:"
+          docker compose -f docker-compose.yaml logs keycloak
+          exit 1
+
+      # Шаг B4: ожидание готовности фронтенда (nginx на порту 3000).
+      - name: B4. Wait for Frontend
+        run: |
+          echo "Waiting for frontend on http://localhost:3000 ..."
+          for i in $(seq 1 24); do
+            if curl -fsS -o /dev/null http://localhost:3000; then
+              echo "OK: Frontend is up (attempt $i)."
+              exit 0
+            fi
+            echo "Attempt $i/24: Frontend not ready yet, retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::Frontend did not become ready in time. Logs:"
+          docker compose -f docker-compose.yaml logs frontend
+          exit 1
+
+      # Шаг B5: ожидание опциональных сервисов task-2 (ClickHouse, Airflow, API).
+      # Шаги срабатывают ТОЛЬКО если соответствующие сервисы описаны в
+      # docker-compose.yaml (например, через profiles: [task-2] или в ветке
+      # task-2) — для ветки task-1 шаг завершается сразу (no-op) и не ломает CI.
+      - name: B5. Wait for optional Task-2 services (ClickHouse / Airflow / API)
+        run: |
+          SERVICES=$(docker compose -f docker-compose.yaml config --services)
+          echo "Services defined in compose: ${SERVICES//$'\n'/, }"
+
+          wait_http () { # $1 - service name, $2 - url
+            echo "Waiting for $1 at $2 ..."
+            for i in $(seq 1 36); do
+              if curl -fsS -o /dev/null "$2"; then
+                echo "OK: $1 is up (attempt $i)."
+                return 0
+              fi
+              sleep 5
+            done
+            echo "::error::$1 did not become ready in time. Logs:"
+            docker compose -f docker-compose.yaml logs "$1"
+            exit 1
+          }
+
+          echo "$SERVICES" | grep -qx 'clickhouse' \
+            && wait_http clickhouse "http://localhost:8123/ping" \
+            || echo "Skip: no 'clickhouse' service."
+
+          echo "$SERVICES" | grep -qx 'airflow' \
+            && wait_http airflow "http://localhost:8081/health" \
+            || echo "Skip: no 'airflow' service."
+
+          echo "$SERVICES" | grep -qx 'api' \
+            && wait_http api "http://localhost:8000/health" \
+            || echo "Skip: no 'api' service."
+
+      # ------------------------------------------------------------------
+      # Этап C. Функциональные smoketests (Задание 1)
+      # ------------------------------------------------------------------
+
+      # Шаг C1: проверка доступности Keycloak realm-эндпоинта.
+      # curl -f падает на HTTP >= 400 (404 = realm не импортировался).
+      - name: C1. Keycloak realm endpoint responds
+        run: |
+          curl -fsS http://localhost:8080/realms/reports-realm
+          echo ""
+          echo "OK: realm 'reports-realm' is reachable."
+
+      # Шаг C2 (негативный тест Задания 1):
+      # запрос авторизации БЕЗ code_challenge / code_challenge_method
+      # не должен приводить к выдаче authorization code.
+      # Keycloak с принудительным PKCE (S256) обязан отклонить такой запрос
+      # (HTTP >= 400 или редирект с параметром error и БЕЗ code=).
+      - name: C2. Negative test — auth without PKCE must be rejected
+        run: |
+          set -euo pipefail
+          AUTH_URL="http://localhost:8080/realms/reports-realm/protocol/openid-connect/auth?client_id=reports-frontend&response_type=code&scope=openid&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcallback"
+
+          HEADERS=$(mktemp)
+          BODY=$(mktemp)
+          STATUS=$(curl -s -D "$HEADERS" -o "$BODY" -w "%{http_code}" "$AUTH_URL" || true)
+
+          echo "HTTP status: $STATUS"
+          echo "--- Response headers ---"; cat "$HEADERS"
+          echo "--- Response body (first 30 lines) ---"; head -n 30 "$BODY"
+
+          # Жёсткий провал: сервер выдал authorization code без PKCE.
+          if grep -qiE '^location:.*[?&]code=' "$HEADERS"; then
+            echo "::error::FAIL: authorization code was issued WITHOUT PKCE (Direct Access / ROPF risk)."
+            exit 1
+          fi
+
+          # Ожидаемое отклонение: HTTP >= 400 либо редирект с ошибкой
+          # (error=invalid_request / not_allowed) — PKCE принудителен.
+          if [ "${STATUS:-000}" -ge 400 ] || grep -qiE '^location:.*([?&]error=|state=)' "$HEADERS"; then
+            echo "OK: Keycloak rejected the authorization request without PKCE."
+            exit 0
+          fi
+
+          echo "::error::FAIL: unexpected response for auth request without PKCE (status=$STATUS). PKCE may not be enforced."
+          exit 1
+
+      # Шаг C3: сборка фронтенда отдаёт HTTP 200 (nginx-контейнер жив).
+      - name: C3. Frontend responds with HTTP 200
+        run: |
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000)
+          echo "Frontend HTTP status: $CODE"
+          [ "$CODE" = "200" ] || { echo "::error::Expected HTTP 200 from frontend, got $CODE"; exit 1; }
+          echo "OK: Frontend returned HTTP 200."
+
+      # ------------------------------------------------------------------
+      # Завершение: гарантированная очистка окружения
+      # ------------------------------------------------------------------
+
+      # Шаг D1: остановка и удаление контейнеров, сетей и томов.
+      # `if: always()` гарантирует очистку даже при падении предыдущих шагов.
+      - name: D1. Teardown (docker compose down -v)
+        if: always()
+        run: docker compose -f docker-compose.yaml down -v --remove-orphans
