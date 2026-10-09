@@ -56,4 +56,27 @@ docker compose up -d --build
 * **Airflow Web UI**: [http://localhost:8081](http://localhost:8081) (`admin` / `admin`)
 * **Reporting API**: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-```
+---
+
+## Автоматическая проверка при пуше (GitHub Actions CI)
+
+При каждом `push` в ветки `task-1`, `task-2`, `main`, а также при открытии `pull_request` в эти ветки, запускается автоматический CI-пайплайн: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
+
+Пайплайн выполняется на чистом Linux (`ubuntu-latest`) и состоит из этапов:
+
+1. **Этап A. Целостность и кроссплатформенность:**
+   - проверка отсутствия CRLF-окончаний строк в файлах кодовой базы (`.sh`, `.json`, `.py`, `.ts`, `.tsx`, `.yaml`, `.yml`, `.md`, `.sql`);
+   - синтаксическая валидация [`keycloak/realm-export.json`](./keycloak/realm-export.json) и [`docker-compose.yaml`](./docker-compose.yaml);
+   - статическая проверка требований Задания 1: у клиента `reports-frontend` включён PKCE `S256` и запрещён Direct Access Grants.
+2. **Этап B. Сборка и запуск инфраструктуры:**
+   - `docker compose build` и `docker compose up -d`;
+   - ожидание готовности Keycloak (realm `reports-realm`), фронтенда и опциональных сервисов Задания 2 (ClickHouse, Airflow, API — проверяются только если описаны в compose).
+3. **Этап C. Функциональные smoketests:**
+   - доступность realm-эндпоинта Keycloak;
+   - негативный тест: запрос авторизации **без** `code_challenge_method` должен быть отклонён Keycloak (PKCE принудителен);
+   - фронтенд отвечает HTTP 200.
+4. **Этап D. Очистка:** `docker compose down -v` (гарантированно, даже при падении шагов).
+
+Результаты выполнения доступны во вкладке **Actions** репозитория. Пайплайн должен быть зелёным перед созданием PR в `main` — красный CI блокирует приемку задания.
+
+Требования к локальному коммиту: файлы должны быть в кодировке UTF-8 с окончаниями строк LF (закреплено в [`.gitattributes`](./.gitattributes)), иначе проверка CRLF упадёт на этапе A.
