@@ -8,7 +8,10 @@ services:
       POSTGRES_USER: keycloak_user
       POSTGRES_PASSWORD: keycloak_password
     volumes:
-      - ./postgres-keycloak-data:/var/lib/postgresql/data
+      # Именованный volume вместо bind-mount каталога Windows:
+      # PostgreSQL требует chmod 700 на каталоге данных, что невозможно
+      # на bind-mount с файловой системой хоста Windows (initdb: Operation not permitted).
+      - keycloak_db_data:/var/lib/postgresql/data
     ports:
       - "5433:5432"
   keycloak:
@@ -40,3 +43,6 @@ services:
       REACT_APP_KEYCLOAK_URL: http://localhost:8080
       REACT_APP_KEYCLOAK_REALM: reports-realm
       REACT_APP_KEYCLOAK_CLIENT_ID: reports-frontend
+
+volumes:
+  keycloak_db_data:
