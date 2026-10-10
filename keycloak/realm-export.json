@@ -112,7 +112,7 @@
   "clients": [
     {
       "clientId": "reports-frontend",
-      "enabled": true,
+      "enabled": false,
       "protocol": "openid-connect",
       "publicClient": true,
       "standardFlowEnabled": true,
