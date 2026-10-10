@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+httpx
+python-jose[cryptography]
+clickhouse-connect
+pydantic
