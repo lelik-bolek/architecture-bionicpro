@@ -25,45 +25,11 @@ ORDER BY (user_id, report_date)
 SETTINGS index_granularity = 8192;
 
 -- ============================================
--- Тестовые данные за закрытые дни (today()-1, today()-2)
+-- Тестовые данные за закрытые дни
 -- Для пользователя 'prothetic1'
+-- Используем даты относительно текущей (2026-10-10)
+-- report_date -2 дня = 2026-10-08
+-- report_date -1 день = 2026-10-09
 -- ============================================
 
-INSERT INTO prosthetic_reports_mart
-(
-    user_id,
-    user_name,
-    contract_number,
-    prosthetic_id,
-    report_date,
-    total_steps,
-    active_time_seconds,
-    battery_drain_avg,
-    load_level_max,
-    created_at
-)
-VALUES
-(
-    'prothetic1',
-    'Иванов Иван Иванович',
-    'CTR-2024-00142',
-    'PRO-HIP-00742',
-    toDate(now() - INTERVAL 2 DAY),
-    8432,
-    25800,
-    12.5,
-    78.3,
-    now()
-),
-(
-    'prothetic1',
-    'Иванов Иван Иванович',
-    'CTR-2024-00142',
-    'PRO-HIP-00742',
-    toDate(now() - INTERVAL 1 DAY),
-    9105,
-    28400,
-    14.2,
-    82.1,
-    now()
-);
+INSERT INTO prosthetic_reports_mart (user_id, user_name, contract_number, prosthetic_id, report_date, total_steps, active_time_seconds, battery_drain_avg, load_level_max, created_at) VALUES ('prothetic1', 'Иванов Иван Иванович', 'CTR-2024-00142', 'PRO-HIP-00742', '2026-10-08', 8432, 25800, 12.5, 78.3, now()) ('prothetic1', 'Иванов Иван Иванович', 'CTR-2024-00142', 'PRO-HIP-00742', '2026-10-09', 9105, 28400, 14.2, 82.1, now());

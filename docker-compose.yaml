@@ -1,6 +1,27 @@
 version: '3.8'
 
 services:
+  # ============================================
+  # CLICKHOUSE
+  # ============================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./clickhouse/init_mart.sql:/docker-entrypoint-initdb.d/init_mart.sql
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ============================================
+  # KEYCLOAK DATABASE
+  # ============================================
   keycloak_db:
     image: postgres:14
     environment:
@@ -14,6 +35,10 @@ services:
       - keycloak_db_data:/var/lib/postgresql/data
     ports:
       - "5433:5432"
+
+  # ============================================
+  # KEYCLOAK
+  # ============================================
   keycloak:
     image: quay.io/keycloak/keycloak:21.1
     environment:
@@ -23,7 +48,7 @@ services:
       KC_DB_URL: jdbc:postgresql://keycloak_db:5432/keycloak_db
       KC_DB_USERNAME: keycloak_user
       KC_DB_PASSWORD: keycloak_password
-    command: 
+    command:
       - start-dev
       - --import-realm
     volumes:
@@ -32,6 +57,28 @@ services:
       - "8080:8080"
     depends_on:
       - keycloak_db
+
+  # ============================================
+  # REPORTING API
+  # ============================================
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: reports-realm
+    depends_on:
+      - clickhouse
+      - keycloak
+
+  # ============================================
+  # FRONTEND
+  # ============================================
   frontend:
     build:
       context: ./frontend
@@ -46,3 +93,4 @@ services:
 
 volumes:
   keycloak_db_data:
+  clickhouse_data:
