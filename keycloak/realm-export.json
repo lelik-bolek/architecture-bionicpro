@@ -112,11 +112,11 @@
   "clients": [
     {
       "clientId": "reports-frontend",
-      "enabled": false,
+      "enabled": true,
       "protocol": "openid-connect",
       "publicClient": true,
       "standardFlowEnabled": true,
-      "directAccessGrantsEnabled": true,
+      "directAccessGrantsEnabled": false,
       "redirectUris": ["http://localhost:3000/*"],
       "webOrigins": ["http://localhost:3000"],
       "attributes": {
